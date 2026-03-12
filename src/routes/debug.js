@@ -1,7 +1,6 @@
 // src/routes/debug.js
 // ─────────────────────────────────────────────────────────────────────────────
 // DEBUG ROUTES — only active when NODE_ENV !== 'production'
-// Lets you test the discover filter logic via curl/Postman without the app
 //
 // Mount in src/app.js:
 //   if (process.env.NODE_ENV !== "production") {
@@ -21,10 +20,33 @@ const getNakshatraObj = (kundli) =>
    kundli ? NAKSHATRAS[kundli.nakshatraIndex] : null;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/debug/users
-// List all onboarded users with their key filter fields at a glance
+// Canonical guna helper — mirrors the one in matching.js
 //
-// Usage: curl http://192.168.29.18:5000/api/debug/users
+// ALWAYS calls calculateGunaMilan(femaleNak, maleNak) regardless of
+// which email was passed first. This makes debug output consistent
+// with what the app shows both users.
+//
+// Same-gender fallback: uses u1→u2 order (consistent, if non-traditional)
+// ─────────────────────────────────────────────────────────────────────────────
+const getCanonicalGuna = (u1, u2) => {
+   const n1 = getNakshatraObj(u1.kundli);
+   const n2 = getNakshatraObj(u2.kundli);
+   if (!n1 || !n2) return null;
+
+   if (u1.gender === "female" && u2.gender === "male") {
+      return calculateGunaMilan(n1, n2); // u1=bride, u2=groom ✓
+   } else if (u1.gender === "male" && u2.gender === "female") {
+      return calculateGunaMilan(n2, n1); // swap — female always param 1
+   } else {
+      return calculateGunaMilan(n1, n2); // same-gender fallback
+   }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/debug/users
+// List all onboarded users with key filter fields at a glance
+//
+// Usage: curl http://192.168.29.18:5000/api/debug/users -UseBasicParsing
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/users", async (req, res) => {
    const users = await User.find({ onboardingComplete: true })
@@ -59,10 +81,10 @@ router.get("/users", async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/debug/discover/:email
-// Run the discover filter as if this user opened the app
-// Shows exactly who they'd see and WHY others were excluded
+// Simulate the discover feed for a user — shows who appears and why others
+// are excluded (age, gender pref, guna score, already liked/passed)
 //
-// Usage: curl http://192.168.29.18:5000/api/debug/discover/brat1@b.com
+// Usage: curl http://192.168.29.18:5000/api/debug/discover/m1@b.com -UseBasicParsing
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/discover/:email", async (req, res) => {
    const me = await User.findOne({
@@ -78,7 +100,6 @@ router.get("/discover/:email", async (req, res) => {
       ...(me.passedUsers || []),
    ];
 
-   // All other onboarded users
    const everyone = await User.find({
       _id: { $ne: me._id },
       onboardingComplete: true,
@@ -94,36 +115,28 @@ router.get("/discover/:email", async (req, res) => {
    for (const u of everyone) {
       const reasons = [];
 
-      // Already liked/passed?
       if (excludeIds.map(String).includes(String(u._id))) {
          reasons.push("already liked/passed by me");
       }
-      // Age filter
       if (u.age < minAge || u.age > maxAge) {
          reasons.push(`age ${u.age} outside my range ${minAge}-${maxAge}`);
       }
-      // My genderPref filter
       if (genderPref !== "both" && u.gender !== genderPref) {
          reasons.push(`I want ${genderPref}, they are ${u.gender}`);
       }
-      // Their genderPref — do they want to see me?
       const theirPref = u.preferences?.genderPref;
       if (theirPref && theirPref !== "both" && theirPref !== me.gender) {
          reasons.push(`they want ${theirPref}, I am ${me.gender}`);
       }
 
       let gunaScore = null;
-      let gunaPass = true;
       if (reasons.length === 0) {
-         // Calculate guna
-         const myN = getNakshatraObj(me.kundli);
-         const theirN = getNakshatraObj(u.kundli);
-         if (myN && theirN) {
-            const result = calculateGunaMilan(myN, theirN);
+         // Use canonical direction — same score the app would show
+         const result = getCanonicalGuna(me, u);
+         if (result) {
             gunaScore = result.totalScore;
             if (gunaScore < minGunaScore) {
                reasons.push(`guna ${gunaScore}/36 < my min ${minGunaScore}`);
-               gunaPass = false;
             }
          }
       }
@@ -181,9 +194,13 @@ router.get("/discover/:email", async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/debug/guna/:email1/:email2
-// Check guna score between two users
+// Check the CANONICAL guna score between two users.
+// Order of emails doesn't matter — female is always treated as bride.
+// Score matches exactly what both users see in the app.
 //
-// Usage: curl http://192.168.29.18:5000/api/debug/guna/brat1@b.com/brat4@b.com
+// Usage: curl http://192.168.29.18:5000/api/debug/guna/m11@b.com/f11@b.com -UseBasicParsing
+//        curl http://192.168.29.18:5000/api/debug/guna/f11@b.com/m11@b.com -UseBasicParsing
+//        → both return the same score now ✓
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/guna/:email1/:email2", async (req, res) => {
    const [u1, u2] = await Promise.all([
@@ -193,25 +210,34 @@ router.get("/guna/:email1/:email2", async (req, res) => {
    if (!u1 || !u2)
       return res.status(404).json({ error: "One or both users not found" });
 
-   const n1 = getNakshatraObj(u1.kundli);
-   const n2 = getNakshatraObj(u2.kundli);
-   if (!n1 || !n2)
-      return res.status(400).json({ error: "Missing kundli data" });
+   const result = getCanonicalGuna(u1, u2);
+   if (!result) return res.status(400).json({ error: "Missing kundli data" });
 
-   const result = calculateGunaMilan(n1, n2);
+   // Tell the caller which direction was used so it's transparent
+   const bride = u1.gender === "female" ? u1 : u2;
+   const groom = u1.gender === "male" ? u1 : u2;
+   const sameGender = u1.gender === u2.gender;
+
    console.log(
-      `\n[DEBUG/GUNA] ${u1.name} (${u1.kundli?.nakshatra}) × ${u2.name} (${u2.kundli?.nakshatra}) = ${result.totalScore}/36`,
+      `\n[DEBUG/GUNA] ${bride.name} (bride/female) × ${groom.name} (groom/male) = ${result.totalScore}/36`,
+      sameGender ? "(same-gender fallback order)" : "(canonical ✓)",
    );
 
    return res.json({
+      canonical: !sameGender,
+      direction: sameGender
+         ? `same-gender fallback: ${u1.name} → ${u2.name}`
+         : `bride: ${bride.name} (${bride.kundli?.nakshatra}) → groom: ${groom.name} (${groom.kundli?.nakshatra})`,
       user1: {
          name: u1.name,
+         gender: u1.gender,
          nakshatra: u1.kundli?.nakshatra,
          gana: u1.kundli?.gana,
          nadi: u1.kundli?.nadi,
       },
       user2: {
          name: u2.name,
+         gender: u2.gender,
          nakshatra: u2.kundli?.nakshatra,
          gana: u2.kundli?.gana,
          nadi: u2.kundli?.nadi,
@@ -226,6 +252,8 @@ router.get("/guna/:email1/:email2", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/debug/matches
 // List all match documents with user names resolved
+//
+// Usage: curl http://192.168.29.18:5000/api/debug/matches -UseBasicParsing
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/matches", async (req, res) => {
    const matches = await Match.find()
@@ -247,9 +275,8 @@ router.get("/matches", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/debug/reset/:email
 // Clear a user's liked/passed history so they see everyone again in discover
-// (useful for retesting without deleting accounts)
 //
-// Usage: curl -X DELETE http://192.168.29.18:5000/api/debug/reset/brat1@b.com
+// Usage: curl -Method DELETE http://192.168.29.18:5000/api/debug/reset/m1@b.com -UseBasicParsing
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete("/reset/:email", async (req, res) => {
    const user = await User.findOneAndUpdate(

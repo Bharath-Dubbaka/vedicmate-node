@@ -176,6 +176,47 @@ router.get("/me", protect, async (req, res) => {
    }
 });
 
+// PATCH /api/auth/me
+// Update mutable profile fields — currently: bio only
+// Easy to extend: add name, photos, etc. later
+//
+// Body: { bio: "..." }
+// Returns: { success, user: { bio } }
+router.patch("/me", protect, async (req, res) => {
+   try {
+      const { bio } = req.body;
+
+      // Build update object — only include fields that were sent
+      const updates = {};
+      if (bio !== undefined) {
+         updates.bio = bio.trim().slice(0, 300); // enforce 300 char limit server-side
+      }
+
+      if (Object.keys(updates).length === 0) {
+         return res
+            .status(400)
+            .json({ success: false, message: "No updatable fields provided" });
+      }
+
+      const user = await User.findByIdAndUpdate(
+         req.user._id,
+         { $set: updates },
+         { new: true }, // return updated doc
+      ).select(
+         "name email bio gender age kundli preferences lookingFor onboardingComplete",
+      );
+
+      return res.status(200).json({
+         success: true,
+         message: "Profile updated",
+         user,
+      });
+   } catch (err) {
+      console.error("PATCH /me error:", err);
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/google — Placeholder until OAuth is set up
 // ─────────────────────────────────────────────────────────────────────────────

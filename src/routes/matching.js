@@ -1,4 +1,21 @@
-// src/routes/matching.js
+/**
+ * src/routes/matching.js
+ *
+ * CANONICAL GUNA MILAN DIRECTION:
+ * ─────────────────────────────────────────────────────────
+ * Traditional Vedic Ashta Koota always calculates as:
+ *   calculateGunaMilan(BRIDE/female, GROOM/male)
+ *
+ * Why it matters:
+ *   - Varna: male's rank must be >= female's rank (positional rule)
+ *   - Tara:  counted FROM bride's nakshatra TO groom's (directional)
+ *   - Bhakoot: rashi position is counted bride→groom (directional)
+ *
+ * Enforced by the helper: getCanonicalGuna(userA, userB)
+ *   → always resolves who is bride/groom regardless of who is "me"
+ *   → both users see the SAME score
+ */
+
 const express = require("express");
 const User = require("../models/User");
 const Match = require("../models/Match");
@@ -10,16 +27,61 @@ const router = express.Router();
 router.use(protect);
 
 // ─────────────────────────────────────────────────────────
-// Helper: get full Nakshatra object from kundli stored in DB
+// Helper: hydrate full Nakshatra object from stored kundli
+//
+// Why we store nakshatraIndex and re-hydrate:
+//   The DB stores only the index (0-26). At runtime we look
+//   up the full object from NAKSHATRAS[] which has all the
+//   fields gunaMilan needs (animal, gana, nadi, vashya, etc.)
 // ─────────────────────────────────────────────────────────
 const getNakshatraObj = (kundli) => {
    if (!kundli) return null;
-   // Re-hydrate from index for full attribute access
    return NAKSHATRAS[kundli.nakshatraIndex];
 };
 
 // ─────────────────────────────────────────────────────────
+// Helper: canonical Guna Milan calculation
+//
+// ALWAYS calls calculateGunaMilan(femaleNakshatra, maleNakshatra)
+// regardless of which user is "me" or "them".
+//
+// @param userA - full User doc or lean object (has .gender, .kundli)
+// @param userB - full User doc or lean object (has .gender, .kundli)
+// @returns gunaResult from calculateGunaMilan, or null if data missing
+//
+// Edge cases:
+//   - If both are same gender → falls back to (userA, userB) order
+//     (non-traditional but better than crashing)
+//   - If either kundli is missing → returns null
+// ─────────────────────────────────────────────────────────
+const getCanonicalGuna = (userA, userB) => {
+   const nakA = getNakshatraObj(userA.kundli);
+   const nakB = getNakshatraObj(userB.kundli);
+   if (!nakA || !nakB) return null;
+
+   // Determine bride (female) and groom (male)
+   // Traditional rule: female nakshatra = param 1, male = param 2
+   let brideNak, groomNak;
+
+   if (userA.gender === "female" && userB.gender === "male") {
+      brideNak = nakA;
+      groomNak = nakB;
+   } else if (userA.gender === "male" && userB.gender === "female") {
+      brideNak = nakB; // swap — female always goes first
+      groomNak = nakA;
+   } else {
+      // Same gender or "other" — no traditional direction, use A→B
+      // Both users will still see the same score since we're consistent
+      brideNak = nakA;
+      groomNak = nakB;
+   }
+
+   return calculateGunaMilan(brideNak, groomNak);
+};
+
+// ─────────────────────────────────────────────────────────
 // Helper: send Expo push notification
+// Silently skips if token missing or invalid format
 // ─────────────────────────────────────────────────────────
 const sendPushNotification = async (pushToken, title, body, data = {}) => {
    if (!pushToken || !pushToken.startsWith("ExponentPushToken")) return;
@@ -43,10 +105,12 @@ const sendPushNotification = async (pushToken, title, body, data = {}) => {
 // ─────────────────────────────────────────────────────────
 // GET /api/matching/discover
 //
-// Returns a batch of compatible profiles for the swipe deck
+// Returns a batch of compatible profiles for the swipe deck.
+// Filters by: age range, gender preference, mutual gender pref,
+//             and minimum guna score threshold.
 //
 // Query params:
-//   limit  - number of profiles to return (default 10)
+//   limit  - profiles to return (default 10)
 //   cursor - last seen userId for pagination
 // ─────────────────────────────────────────────────────────
 router.get("/discover", async (req, res) => {
@@ -66,6 +130,7 @@ router.get("/discover", async (req, res) => {
       const { minAge, maxAge, minGunaScore, genderPref } = me.preferences;
 
       // ── Build candidate query ─────────────────────
+      // Exclude: myself, people I already liked, people I already passed
       const excludeIds = [req.user._id, ...me.likedUsers, ...me.passedUsers];
 
       const query = {
@@ -76,33 +141,34 @@ router.get("/discover", async (req, res) => {
          age: { $gte: minAge, $lte: maxAge },
       };
 
-      // Gender filter — apply MY preference for what I want to see
+      // My preference: only show the gender I want to see
       if (genderPref !== "both") {
-         query.gender = genderPref; // only show profiles of the gender I prefer
+         query.gender = genderPref;
       }
 
-      // Mutual filter — only show profiles whose genderPref includes MY gender
+      // Mutual filter: only show people who would also want to see me
+      // e.g. if I'm male, only show females whose genderPref is "male" or "both"
       if (me.gender && me.gender !== "other") {
          query["preferences.genderPref"] = { $in: [me.gender, "both"] };
       }
 
-      // Fetch more than needed so we can filter by guna score
+      // Fetch 3x more than needed — we'll filter by guna score after calculation
       const candidates = await User.find(query)
          .select("name age gender kundli photos bio lookingFor")
-         .limit(parseInt(limit) * 3) // fetch 3x, filter down after guna check
+         .limit(parseInt(limit) * 3)
          .lean();
 
-      // ── Calculate Guna for each candidate ─────────
-      const myNakshatra = getNakshatraObj(me.kundli);
+      // ── Calculate canonical Guna for each candidate ───
+      // Using getCanonicalGuna() ensures female is always param 1,
+      // so the score is identical regardless of who is viewing
       const results = [];
 
       for (const candidate of candidates) {
-         const theirNakshatra = getNakshatraObj(candidate.kundli);
-         if (!theirNakshatra || !myNakshatra) continue;
+         // Pass both users — getCanonicalGuna resolves the direction internally
+         const gunaResult = getCanonicalGuna(me, candidate);
+         if (!gunaResult) continue;
 
-         const gunaResult = calculateGunaMilan(myNakshatra, theirNakshatra);
-
-         // Filter out below minimum guna score
+         // Filter out profiles below the user's minimum guna threshold
          if (gunaResult.totalScore < minGunaScore) continue;
 
          results.push({
@@ -116,8 +182,13 @@ router.get("/discover", async (req, res) => {
                cosmicCard: {
                   nakshatra: `${candidate.kundli.nakshatraSymbol} ${candidate.kundli.nakshatra}`,
                   rashi: candidate.kundli.rashi,
+                  pada: candidate.kundli.pada,
                   animal: candidate.kundli.animal,
                   gana: candidate.kundli.gana,
+                  nadi: candidate.kundli.nadi,
+                  varna: candidate.kundli.varna,
+                  vashya: candidate.kundli.vashya,
+                  lordPlanet: candidate.kundli.lordPlanet,
                   ganaTitle:
                      candidate.kundli.gana === "Deva"
                         ? "Divine Soul ✨"
@@ -133,8 +204,9 @@ router.get("/discover", async (req, res) => {
                verdict: gunaResult.verdict,
                verdictEmoji: gunaResult.verdictEmoji,
                verdictColor: gunaResult.verdictColor,
-               // Send top 3 highlights only (save bandwidth)
                highlights: getTopHighlights(gunaResult.breakdown),
+               breakdown: gunaResult.breakdown, // full 8-koota object for modal
+               doshas: gunaResult.doshas, // dosha array for modal
                hasDoshas: gunaResult.doshas.length > 0,
                doshaCount: gunaResult.doshas.length,
             },
@@ -143,7 +215,7 @@ router.get("/discover", async (req, res) => {
          if (results.length >= parseInt(limit)) break;
       }
 
-      // Sort by guna score descending
+      // Sort best matches first
       results.sort(
          (a, b) => b.compatibility.totalScore - a.compatibility.totalScore,
       );
@@ -162,12 +234,13 @@ router.get("/discover", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // GET /api/matching/compatibility/:userId
 //
-// Full Guna Milan report between me and any user
-// Called when user taps "View Full Kundli" on a profile
+// Full canonical Guna Milan report between me and any user.
+// Used when tapping "View Full Kundli" on a profile card.
+// Returns the same score regardless of who calls it.
 // ─────────────────────────────────────────────────────────
 router.get("/compatibility/:userId", async (req, res) => {
    try {
-      const me = await User.findById(req.user._id).select("kundli name");
+      const me = await User.findById(req.user._id).select("kundli name gender");
       const them = await User.findById(req.params.userId).select(
          "kundli name age gender photos bio",
       );
@@ -184,9 +257,8 @@ router.get("/compatibility/:userId", async (req, res) => {
          });
       }
 
-      const myNakshatra = getNakshatraObj(me.kundli);
-      const theirNakshatra = getNakshatraObj(them.kundli);
-      const gunaResult = calculateGunaMilan(myNakshatra, theirNakshatra);
+      // getCanonicalGuna resolves bride/groom direction automatically
+      const gunaResult = getCanonicalGuna(me, them);
 
       return res.status(200).json({
          success: true,
@@ -206,7 +278,16 @@ router.get("/compatibility/:userId", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // POST /api/matching/like/:userId
 //
-// Like a profile. If they already liked me → it's a match!
+// Like a profile. If they already liked me → mutual match!
+//
+// Flow:
+//   1. Add theirId to my likedUsers array
+//   2. Look for an existing Match doc for this pair
+//   3a. If match doc exists AND they already liked me → set status=matched
+//   3b. Otherwise → create/update pending Match doc
+//
+// The Match doc stores the CANONICAL guna score so both users
+// always see the same number in their Matches tab.
 // ─────────────────────────────────────────────────────────
 router.post("/like/:userId", async (req, res) => {
    try {
@@ -219,42 +300,51 @@ router.post("/like/:userId", async (req, res) => {
             .json({ success: false, message: "Cannot like yourself" });
       }
 
-      const them = await User.findById(theirId).select("name kundli pushToken");
+      // Fetch both users — need gender for canonical guna direction
+      const them = await User.findById(theirId).select(
+         "name kundli gender pushToken",
+      );
       if (!them) {
          return res
             .status(404)
             .json({ success: false, message: "User not found" });
       }
+      const me = await User.findById(myId).select(
+         "name kundli gender likedUsers",
+      );
 
-      const me = await User.findById(myId).select("name kundli likedUsers");
-
-      // Add to likedUsers (prevent duplicates)
-      if (!me.likedUsers.includes(theirId)) {
+      // Add to my likedUsers (idempotent — $addToSet ignores duplicates)
+      if (!me.likedUsers.map(String).includes(theirId)) {
          await User.findByIdAndUpdate(myId, {
             $addToSet: { likedUsers: theirId },
          });
       }
 
-      // ── Check if they already liked me ───────────
-      // Find existing pending match where they liked me
-      const sortedIds = [myId, theirId].sort();
+      // Sort IDs for consistent match doc lookup — [smallerId, largerId]
+      // This ensures findOne always finds the same doc regardless of who liked first
+      const sortedIds = [myId, theirId].map(String).sort();
       let matchDoc = await Match.findOne({ users: { $all: sortedIds } });
 
-      // Calculate guna score (needed either way)
-      const myNakshatra = getNakshatraObj(me.kundli);
-      const theirNakshatra = getNakshatraObj(them.kundli);
-      const gunaResult = calculateGunaMilan(myNakshatra, theirNakshatra);
+      // Calculate CANONICAL guna — female always param 1, male always param 2
+      // Both users will see this exact same score
+      const gunaResult = getCanonicalGuna(me, them);
+      if (!gunaResult) {
+         return res
+            .status(400)
+            .json({ success: false, message: "Kundli data incomplete" });
+      }
 
+      // Check if they already liked me (making this a mutual match)
       const isMatch = matchDoc && matchDoc.hasLiked(theirId);
 
       if (isMatch) {
-         // 🎉 Mutual match!
+         // ── 🎉 Mutual match! ──────────────────────────
          matchDoc.status = "matched";
          matchDoc.matchedAt = new Date();
          matchDoc.likes.push({ from: myId });
          await matchDoc.save();
 
-         // Notify them
+         // Notify them via Expo push
          await sendPushNotification(
             them.pushToken,
             "💫 It's a Cosmic Match!",
@@ -271,8 +361,9 @@ router.post("/like/:userId", async (req, res) => {
             verdict: gunaResult.verdict,
          });
       } else {
-         // First like — create or update pending match
+         // ── First like — create or update pending match ──
          if (!matchDoc) {
+            // New match doc — store canonical guna score for both users to share
             matchDoc = await Match.create({
                users: sortedIds,
                likes: [{ from: myId }],
@@ -286,6 +377,8 @@ router.post("/like/:userId", async (req, res) => {
                doshas: gunaResult.doshas,
             });
          } else {
+            // Match doc already exists (they liked me first, I'm now liking back but
+            // it somehow didn't trigger isMatch — edge case, just push the like)
             matchDoc.likes.push({ from: myId });
             await matchDoc.save();
          }
@@ -305,7 +398,8 @@ router.post("/like/:userId", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // POST /api/matching/pass/:userId
 //
-// Pass (left swipe) on a profile
+// Pass (left swipe) — add to passedUsers so they never
+// appear in discover again for this user
 // ─────────────────────────────────────────────────────────
 router.post("/pass/:userId", async (req, res) => {
    try {
@@ -321,7 +415,10 @@ router.post("/pass/:userId", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // GET /api/matching/matches
 //
-// Get all mutual matches (for the Matches tab)
+// All mutual matches for the Matches tab.
+// Populates the OTHER user's profile (not the requester).
+// Returns gunaScore from the stored Match doc — this is the
+// canonical score that was saved at like time.
 // ─────────────────────────────────────────────────────────
 router.get("/matches", async (req, res) => {
    try {
@@ -359,6 +456,7 @@ router.get("/matches", async (req, res) => {
                   : null,
             },
             compatibility: {
+               // Use stored canonical score — same for both users
                gunaScore: m.gunaScore,
                verdict: m.verdict,
                verdictEmoji: m.verdictEmoji,
@@ -381,7 +479,8 @@ router.get("/matches", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // DELETE /api/matching/unmatch/:matchId
 //
-// Unmatch / block
+// Unmatch / block a matched user.
+// Also adds them to passedUsers so they never reappear.
 // ─────────────────────────────────────────────────────────
 router.delete("/unmatch/:matchId", async (req, res) => {
    try {
@@ -399,7 +498,7 @@ router.delete("/unmatch/:matchId", async (req, res) => {
       match.status = "blocked";
       await match.save();
 
-      // Also add to passedUsers so they never appear in discover again
+      // Prevent them from reappearing in discover
       const otherId = match.getOtherUser(req.user._id);
       await User.findByIdAndUpdate(req.user._id, {
          $addToSet: { passedUsers: otherId },
@@ -412,7 +511,10 @@ router.delete("/unmatch/:matchId", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// Helper: return top 3 highest-scoring kootas as highlights
+// Helper: top 3 highest-scoring kootas for card highlights
+//
+// Sorts by percentage (score/max) so kootas are comparable
+// across their different max values (Nadi=8, Varna=1, etc.)
 // ─────────────────────────────────────────────────────────
 const getTopHighlights = (breakdown) => {
    return Object.entries(breakdown)
