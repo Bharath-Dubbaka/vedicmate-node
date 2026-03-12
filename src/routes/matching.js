@@ -76,15 +76,14 @@ router.get("/discover", async (req, res) => {
          age: { $gte: minAge, $lte: maxAge },
       };
 
-      // Gender filter
+      // Gender filter — apply MY preference for what I want to see
       if (genderPref !== "both") {
-         query.gender = genderPref;
+         query.gender = genderPref; // only show profiles of the gender I prefer
       }
-      // Exclude my own gender from seeing same gender (if they prefer opposite)
-      if (me.gender === "male") {
-         query["preferences.genderPref"] = { $in: ["male", "both"] };
-      } else if (me.gender === "female") {
-         query["preferences.genderPref"] = { $in: ["female", "both"] };
+
+      // Mutual filter — only show profiles whose genderPref includes MY gender
+      if (me.gender && me.gender !== "other") {
+         query["preferences.genderPref"] = { $in: [me.gender, "both"] };
       }
 
       // Fetch more than needed so we can filter by guna score
@@ -179,12 +178,10 @@ router.get("/compatibility/:userId", async (req, res) => {
             .json({ success: false, message: "User not found" });
       }
       if (!me.kundli || !them.kundli) {
-         return res
-            .status(400)
-            .json({
-               success: false,
-               message: "One or both users have incomplete Kundli",
-            });
+         return res.status(400).json({
+            success: false,
+            message: "One or both users have incomplete Kundli",
+         });
       }
 
       const myNakshatra = getNakshatraObj(me.kundli);

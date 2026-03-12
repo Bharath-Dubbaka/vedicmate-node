@@ -42,6 +42,7 @@ const UserSchema = new mongoose.Schema(
       email: { type: String, unique: true, required: true, lowercase: true },
       name: { type: String, required: true },
       avatar: { type: String }, // Google profile pic URL
+      passwordHash: { type: String, select: false }, // hidden by default, use .select("+passwordHash") to fetch
 
       // ── Profile ───────────────────────────────────
       bio: { type: String, maxlength: 300 },

@@ -85,7 +85,10 @@ const MatchSchema = new mongoose.Schema(
 );
 
 // Ensure we never duplicate a pair
-MatchSchema.index({ users: 1 }, { unique: true });
+// MatchSchema.index({ users: 1 }, { unique: true });
+// No unique index on users array — uniqueness is enforced by the $all query + application logic
+//The Match.findOne({ users: { $all: sortedIds } }) lookup already ensures you find existing matches before creating new ones. The unique index is redundant AND broken for arrays.
+
 MatchSchema.index({ status: 1 });
 MatchSchema.index({ gunaScore: -1 });
 

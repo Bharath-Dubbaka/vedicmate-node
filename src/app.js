@@ -27,6 +27,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/matching", matchingRoutes);
 app.use("/api/chat", chatRoutes);
+if (process.env.NODE_ENV !== "production") {
+   app.use("/api/debug", require("./routes/debug"));
+}
 
 app.use((req, res) =>
    res

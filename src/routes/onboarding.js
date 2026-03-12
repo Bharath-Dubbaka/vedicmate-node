@@ -173,7 +173,7 @@ router.post("/profile", async (req, res) => {
             preferences: {
                minAge: preferences.minAge || 18,
                maxAge: preferences.maxAge || 45,
-               minGunaScore: preferences.minGunaScore || 18,
+               minGunaScore: preferences.minGunaScore ?? 18,
                genderPref: preferences.genderPref || "both",
             },
          }),
