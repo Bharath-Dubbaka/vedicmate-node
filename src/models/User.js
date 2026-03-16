@@ -70,7 +70,13 @@ const UserSchema = new mongoose.Schema(
             default: "both",
          },
       },
-
+      profileViews: [
+         {
+            viewer: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+            viewedAt: { type: Date, default: Date.now },
+         },
+      ],
+      viewedProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
       // ── App State ─────────────────────────────────
       onboardingComplete: { type: Boolean, default: false },
       isActive: { type: Boolean, default: true },

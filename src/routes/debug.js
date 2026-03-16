@@ -294,4 +294,12 @@ router.delete("/reset/:email", async (req, res) => {
    });
 });
 
+// Add to src/routes/debug.js temporarily
+router.get("/push-token/:email", async (req, res) => {
+   const user = await User.findOne({ email: req.params.email }).select(
+      "pushToken name",
+   );
+   res.json({ name: user?.name, pushToken: user?.pushToken });
+});
+
 module.exports = router;

@@ -275,6 +275,72 @@ router.get("/compatibility/:userId", async (req, res) => {
    }
 });
 
+// POST /api/matching/view/:userId  — call this when user opens a profile card
+router.post("/view/:userId", async (req, res) => {
+   try {
+      const theirId = req.params.userId;
+
+      // Use updateOne with $set on a specific sub-document to avoid dupes
+      // Check if this viewer already exists, only add if not
+      await User.updateOne(
+         {
+            _id: theirId,
+            "profileViews.viewer": { $ne: req.user._id }, // only if not already there
+         },
+         {
+            $push: {
+               profileViews: { viewer: req.user._id, viewedAt: new Date() },
+            },
+         },
+      );
+      await User.findByIdAndUpdate(req.user._id, {
+         $addToSet: { viewedProfiles: theirId },
+      });
+      return res.json({ success: true });
+   } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
+// GET /api/matching/viewed-me — who viewed my profile
+router.get("/viewed-me", async (req, res) => {
+   try {
+      const me = await User.findById(req.user._id)
+         .select("profileViews")
+         .populate("profileViews.viewer", "name age photos kundli gender bio");
+
+      // Deduplicate — same viewer can appear multiple times from multiple views
+      const seen = new Set();
+      const viewers = (me.profileViews ?? [])
+         .sort((a, b) => b.viewedAt - a.viewedAt)
+         .map((v) => v.viewer)
+         .filter((v) => {
+            if (!v) return false;
+            const id = v._id.toString();
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+         });
+
+      return res.json({ success: true, users: viewers });
+   } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
+// GET /api/matching/viewed-by-me — profiles I viewed
+router.get("/viewed-by-me", async (req, res) => {
+   try {
+      const me = await User.findById(req.user._id)
+         .select("viewedProfiles")
+         .populate("viewedProfiles", "name age photos kundli gender bio");
+
+      return res.json({ success: true, users: me.viewedProfiles ?? [] });
+   } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
 // ─────────────────────────────────────────────────────────
 // POST /api/matching/like/:userId
 //
@@ -343,7 +409,7 @@ router.post("/like/:userId", async (req, res) => {
          matchDoc.matchedAt = new Date();
          matchDoc.likes.push({ from: myId });
          await matchDoc.save();
-
+         // add push to them:
          // Notify them via Expo push
          await sendPushNotification(
             them.pushToken,
@@ -382,7 +448,13 @@ router.post("/like/:userId", async (req, res) => {
             matchDoc.likes.push({ from: myId });
             await matchDoc.save();
          }
-
+         // Before the isMatch:false return — notify them they got a like:
+         await sendPushNotification(
+            them.pushToken,
+            "✨ Someone liked you!",
+            `${me.name} wants to connect with you`,
+            { type: "liked", userId: myId.toString() },
+         );
          return res.status(200).json({
             success: true,
             isMatch: false,
@@ -528,5 +600,83 @@ const getTopHighlights = (breakdown) => {
       .sort((a, b) => b.percentage - a.percentage)
       .slice(0, 3);
 };
+
+// REPLACE your existing liked-by-me and liked-me routes with these:
+// Key fix: exclude users who are already mutual matches
+
+// ── GET /api/matching/liked-by-me ─────────────────────────────────────────
+// People I liked who have NOT yet liked me back (pending sent requests)
+router.get("/liked-by-me", async (req, res) => {
+   try {
+      const me = await User.findById(req.user._id).select("likedUsers");
+      if (!me.likedUsers?.length) return res.json({ success: true, users: [] });
+
+      // Find matched user IDs so we can exclude them
+      const myMatches = await Match.find({
+         users: req.user._id,
+         status: "matched",
+      })
+         .select("users")
+         .lean();
+
+      const matchedUserIds = myMatches
+         .flatMap((m) => m.users.map(String))
+         .filter((id) => id !== req.user._id.toString());
+
+      // Only show likes where they have NOT liked me back
+      // (i.e. not in my likedUsers from their side, and not already matched)
+      const users = await User.find({
+         _id: {
+            $in: me.likedUsers,
+            $nin: matchedUserIds,
+         },
+         onboardingComplete: true,
+         // Exclude users who already liked me back (those are matches)
+         likedUsers: { $ne: req.user._id },
+      }).select("name age bio photos kundli gender");
+
+      return res.json({ success: true, users });
+   } catch (err) {
+      console.error("[MATCHING] liked-by-me error:", err);
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
+// ── GET /api/matching/liked-me ────────────────────────────────────────────
+// People who liked me but I have NOT liked back yet (pending received requests)
+router.get("/liked-me", async (req, res) => {
+   try {
+      // Find my own likedUsers to exclude people I already liked back
+      const me = await User.findById(req.user._id).select("likedUsers");
+
+      const myLikedIds = (me.likedUsers ?? []).map(String);
+
+      // Find matched user IDs so we can exclude them
+      const myMatches = await Match.find({
+         users: req.user._id,
+         status: "matched",
+      })
+         .select("users")
+         .lean();
+
+      const matchedUserIds = myMatches
+         .flatMap((m) => m.users.map(String))
+         .filter((id) => id !== req.user._id.toString());
+
+      const users = await User.find({
+         likedUsers: req.user._id, // they liked me
+         onboardingComplete: true,
+         _id: {
+            $ne: req.user._id,
+            $nin: [...myLikedIds, ...matchedUserIds], // exclude: I already liked them, or already matched
+         },
+      }).select("name age bio photos kundli gender");
+
+      return res.json({ success: true, users });
+   } catch (err) {
+      console.error("[MATCHING] liked-me error:", err);
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
 
 module.exports = router;
