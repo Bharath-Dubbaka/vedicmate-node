@@ -46,13 +46,19 @@ const initSocket = (httpServer) => {
                status: "matched",
             });
             if (!match) return cb?.({ error: "Match not found" });
+            const otherId = match.getOtherUser(socket.userId).toString();
+
+            // Fetch sender's push token to compare
+            const sender = await User.findById(socket.userId).select(
+               "pushToken",
+            );
+
 
             const msg = await Message.create({
                matchId,
                sender: socket.userId,
                text: text.trim(),
             });
-            const otherId = match.getOtherUser(socket.userId).toString();
             const unread = match.unreadCount?.get(otherId) || 0;
 
             await Match.findByIdAndUpdate(matchId, {
@@ -76,7 +82,10 @@ const initSocket = (httpServer) => {
 
             if (!onlineUsers.has(otherId)) {
                const other = await User.findById(otherId).select("pushToken");
-               if (other?.pushToken?.startsWith("ExponentPushToken")) {
+               if (
+                  other?.pushToken?.startsWith("ExponentPushToken") &&
+                  other.pushToken !== sender.pushToken // ← don't push if same device token
+               ) {
                   fetch("https://exp.host/--/api/v2/push/send", {
                      method: "POST",
                      headers: { "Content-Type": "application/json" },

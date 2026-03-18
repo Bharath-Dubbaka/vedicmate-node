@@ -1,4 +1,15 @@
 // src/routes/auth.js
+// ─────────────────────────────────────────────────────────────────────────────
+// GOOGLE AUTH ADDITION:
+//   POST /api/auth/google
+//   Receives { googleId, email, name, avatar } from frontend
+//   Creates or finds existing user, returns JWT
+//
+//   No passport needed — we verify the user via Google's userinfo API
+//   on the frontend (expo-auth-session), then trust the result here.
+//   For production hardening, you'd verify the access token server-side too.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -31,12 +42,10 @@ const formatUser = (user) => ({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/register
-// Body: { name, email, password }
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
    try {
       const { name, email, password } = req.body;
-
       console.log(`[AUTH/REGISTER] Attempt for email: ${email}`);
 
       if (!name || !email || !password) {
@@ -45,7 +54,6 @@ router.post("/register", async (req, res) => {
             message: "Name, email, and password are required",
          });
       }
-
       if (password.length < 6) {
          return res.status(400).json({
             success: false,
@@ -55,6 +63,14 @@ router.post("/register", async (req, res) => {
 
       const existing = await User.findOne({ email: email.toLowerCase() });
       if (existing) {
+         // If they have a Google account with this email, tell them to use Google
+         if (existing.googleId && !existing.passwordHash) {
+            return res.status(409).json({
+               success: false,
+               message:
+                  "This email is linked to a Google account. Please sign in with Google.",
+            });
+         }
          return res.status(409).json({
             success: false,
             message: "An account with this email already exists",
@@ -67,19 +83,16 @@ router.post("/register", async (req, res) => {
       const user = await User.create({
          name: name.trim(),
          email: email.toLowerCase().trim(),
-         passwordHash, // ← stored as passwordHash in DB
+         passwordHash,
          onboardingComplete: false,
       });
 
       console.log(`[AUTH/REGISTER] User created: ${user._id} (${email})`);
-
       const token = signToken(user._id);
 
-      return res.status(201).json({
-         success: true,
-         token,
-         user: formatUser(user),
-      });
+      return res
+         .status(201)
+         .json({ success: true, token, user: formatUser(user) });
    } catch (err) {
       console.error("[AUTH/REGISTER] Error:", err.message);
       return res.status(500).json({
@@ -91,12 +104,10 @@ router.post("/register", async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/login
-// Body: { email, password }
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
    try {
       const { email, password } = req.body;
-
       console.log(`[AUTH/LOGIN] Attempt for email: ${email}`);
 
       if (!email || !password) {
@@ -106,54 +117,128 @@ router.post("/login", async (req, res) => {
          });
       }
 
-      // Must use .select("+passwordHash") because field has select:false in schema
       const user = await User.findOne({ email: email.toLowerCase() }).select(
          "+passwordHash",
       );
 
       if (!user) {
          console.log(`[AUTH/LOGIN] User not found: ${email}`);
-         return res.status(401).json({
-            success: false,
-            message: "Invalid email or password",
-         });
+         return res
+            .status(401)
+            .json({ success: false, message: "Invalid email or password" });
       }
 
       if (!user.passwordHash) {
          return res.status(401).json({
             success: false,
-            message: "This account uses Google login — no password set",
+            message:
+               "This account uses Google login — please sign in with Google",
          });
       }
 
       const isValid = await bcrypt.compare(password, user.passwordHash);
       if (!isValid) {
          console.log(`[AUTH/LOGIN] Wrong password for: ${email}`);
-         return res.status(401).json({
-            success: false,
-            message: "Invalid email or password",
-         });
+         return res
+            .status(401)
+            .json({ success: false, message: "Invalid email or password" });
       }
 
       console.log(`[AUTH/LOGIN] Success for: ${email}`);
+      const token = signToken(user._id);
+
+      return res
+         .status(200)
+         .json({ success: true, token, user: formatUser(user) });
+   } catch (err) {
+      console.error("[AUTH/LOGIN] Error:", err.message);
+      return res
+         .status(500)
+         .json({ success: false, message: "Login failed. Please try again." });
+   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/auth/google  ← NEW
+//
+// Called after expo-auth-session completes the OAuth flow on the frontend.
+// Frontend sends: { googleId, email, name, avatar }
+//
+// Logic:
+//   1. Look up user by googleId OR email
+//   2. If found by email but no googleId → link Google to existing account
+//   3. If not found → create new user (skip password, set googleId)
+//   4. Return JWT + user (same format as email/password login)
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/google", async (req, res) => {
+   try {
+      const { googleId, email, name, avatar } = req.body;
+
+      if (!googleId || !email) {
+         return res.status(400).json({
+            success: false,
+            message: "googleId and email are required",
+         });
+      }
+
+      console.log(
+         `[AUTH/GOOGLE] Attempt for email: ${email}, googleId: ${googleId}`,
+      );
+
+      // Try to find existing user
+      let user = await User.findOne({
+         $or: [{ googleId }, { email: email.toLowerCase() }],
+      });
+
+      if (user) {
+         // Link Google ID if they previously registered with email/password
+         if (!user.googleId) {
+            user.googleId = googleId;
+            if (avatar && !user.avatar) user.avatar = avatar;
+            await user.save();
+            console.log(
+               `[AUTH/GOOGLE] Linked Google to existing account: ${email}`,
+            );
+         } else {
+            // Update avatar if changed
+            if (avatar && user.avatar !== avatar) {
+               user.avatar = avatar;
+               await user.save();
+            }
+            console.log(`[AUTH/GOOGLE] Existing Google user: ${email}`);
+         }
+      } else {
+         // New user — create account without password
+         user = await User.create({
+            googleId,
+            email: email.toLowerCase().trim(),
+            name: name?.trim() || email.split("@")[0],
+            avatar: avatar || null,
+            onboardingComplete: false,
+            // No passwordHash — Google-only account
+         });
+         console.log(`[AUTH/GOOGLE] New user created: ${user._id} (${email})`);
+      }
+
       const token = signToken(user._id);
 
       return res.status(200).json({
          success: true,
          token,
          user: formatUser(user),
+         isNewUser: !user.onboardingComplete, // frontend can use this to skip to onboarding
       });
    } catch (err) {
-      console.error("[AUTH/LOGIN] Error:", err.message);
+      console.error("[AUTH/GOOGLE] Error:", err.message);
       return res.status(500).json({
          success: false,
-         message: "Login failed. Please try again.",
+         message: "Google sign-in failed. Please try again.",
       });
    }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/auth/me — Returns current user's full profile (protected)
+// GET /api/auth/me
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/me", protect, async (req, res) => {
    try {
@@ -176,21 +261,16 @@ router.get("/me", protect, async (req, res) => {
    }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/auth/me
-// Update mutable profile fields — currently: bio only
-// Easy to extend: add name, photos, etc. later
-//
-// Body: { bio: "..." }
-// Returns: { success, user: { bio } }
+// ─────────────────────────────────────────────────────────────────────────────
 router.patch("/me", protect, async (req, res) => {
    try {
-      const { bio } = req.body;
+      const { bio, preferences } = req.body;
 
-      // Build update object — only include fields that were sent
       const updates = {};
-      if (bio !== undefined) {
-         updates.bio = bio.trim().slice(0, 300); // enforce 300 char limit server-side
-      }
+      if (bio !== undefined) updates.bio = bio.trim().slice(0, 300);
+      if (preferences !== undefined) updates.preferences = preferences;
 
       if (Object.keys(updates).length === 0) {
          return res
@@ -201,31 +281,18 @@ router.patch("/me", protect, async (req, res) => {
       const user = await User.findByIdAndUpdate(
          req.user._id,
          { $set: updates },
-         { new: true }, // return updated doc
+         { new: true },
       ).select(
          "name email bio gender age kundli preferences lookingFor onboardingComplete",
       );
 
-      return res.status(200).json({
-         success: true,
-         message: "Profile updated",
-         user,
-      });
+      return res
+         .status(200)
+         .json({ success: true, message: "Profile updated", user });
    } catch (err) {
       console.error("PATCH /me error:", err);
       return res.status(500).json({ success: false, message: err.message });
    }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/auth/google — Placeholder until OAuth is set up
-// ─────────────────────────────────────────────────────────────────────────────
-router.post("/google", async (req, res) => {
-   return res.status(503).json({
-      success: false,
-      message:
-         "Google OAuth temporarily unavailable. Please use email/password login.",
-   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

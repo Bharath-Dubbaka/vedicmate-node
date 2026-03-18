@@ -376,7 +376,7 @@ router.post("/like/:userId", async (req, res) => {
             .json({ success: false, message: "User not found" });
       }
       const me = await User.findById(myId).select(
-         "name kundli gender likedUsers",
+         "name kundli gender likedUsers pushToken",
       );
 
       // Add to my likedUsers (idempotent — $addToSet ignores duplicates)
@@ -411,12 +411,14 @@ router.post("/like/:userId", async (req, res) => {
          await matchDoc.save();
          // add push to them:
          // Notify them via Expo push
-         await sendPushNotification(
-            them.pushToken,
-            "💫 It's a Cosmic Match!",
-            `You and ${me.name} are cosmically compatible! ${gunaResult.totalScore}/36 Gunas ✨`,
-            { type: "match", matchId: matchDoc._id },
-         );
+         if (!them.pushToken || them.pushToken !== me.pushToken) {
+            await sendPushNotification(
+               them.pushToken,
+               "💫 It's a Cosmic Match!",
+               `You and ${me.name} are cosmically compatible! ${gunaResult.totalScore}/36 Gunas ✨`,
+               { type: "match", matchId: matchDoc._id },
+            );
+         }
 
          return res.status(200).json({
             success: true,
@@ -449,12 +451,14 @@ router.post("/like/:userId", async (req, res) => {
             await matchDoc.save();
          }
          // Before the isMatch:false return — notify them they got a like:
-         await sendPushNotification(
-            them.pushToken,
-            "✨ Someone liked you!",
-            `${me.name} wants to connect with you`,
-            { type: "liked", userId: myId.toString() },
-         );
+         if (!them.pushToken || them.pushToken !== me.pushToken) {
+            await sendPushNotification(
+               them.pushToken,
+               "✨ Someone liked you!",
+               `${me.name} wants to connect with you`,
+               { type: "liked", userId: myId.toString() },
+            );
+         }
          return res.status(200).json({
             success: true,
             isMatch: false,
