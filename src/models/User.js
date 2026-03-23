@@ -99,7 +99,12 @@ const UserSchema = new mongoose.Schema(
          expiresAt: { type: Date, default: null },
          revenueCatId: { type: String, default: null },
       },
-
+      // ── Profile Boost ──────────────────────────────────────────────────────
+      boost: {
+         active: { type: Boolean, default: false },
+         expiresAt: { type: Date, default: null },
+         usedAt: { type: String, default: null }, // "YYYY-MM-DD" UTC — 1/day limit
+      },
       // ── Daily Swipe Tracking (NEW Sprint 3) ───────
       swipeTracking: {
          date: { type: String, default: null }, // "YYYY-MM-DD" UTC

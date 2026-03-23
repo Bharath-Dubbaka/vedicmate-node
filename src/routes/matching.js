@@ -257,9 +257,9 @@ router.get("/discover", async (req, res) => {
 
       // SPRINT 3: Boosted profiles bubble to top, then sort by guna score
       results.sort((a, b) => {
-         if (a._isBoosted && !b._isBoosted) return -1;
+         if (a._isBoosted && !b._isBoosted) return -1; // boosted first
          if (!a._isBoosted && b._isBoosted) return 1;
-         return b.compatibility.totalScore - a.compatibility.totalScore;
+         return b.compatibility.totalScore - a.compatibility.totalScore; // then by guna
       });
 
       // Clean up internal flag before sending to client

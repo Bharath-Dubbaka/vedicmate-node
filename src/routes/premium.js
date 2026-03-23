@@ -249,4 +249,90 @@ router.post("/verify", protect, async (req, res) => {
    }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/premium/boost
+//
+// Activates a 30-minute profile boost for premium users.
+// Limit: 1 boost per day (resets at UTC midnight).
+// Sets user.boost = { active: true, expiresAt: now+30min, usedAt: today }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/boost", protect, async (req, res) => {
+   try {
+      const user = await User.findById(req.user._id).select("premium boost");
+
+      // Must be premium
+      if (!user.isPremium()) {
+         return res.status(403).json({
+            success: false,
+            requiresPremium: true,
+            message: "Profile boost is a Premium feature",
+         });
+      }
+
+      const now = new Date();
+      const todayUTC = now.toISOString().split("T")[0]; // "YYYY-MM-DD"
+
+      // Check if already used boost today
+      if (user.boost?.usedAt === todayUTC) {
+         // Check if current boost is still active
+         const boostStillActive =
+            user.boost?.active && new Date(user.boost.expiresAt) > now;
+
+         if (boostStillActive) {
+            const minsLeft = Math.ceil(
+               (new Date(user.boost.expiresAt) - now) / 60000,
+            );
+            return res.status(400).json({
+               success: false,
+               message: `Boost already active — ${minsLeft} min remaining`,
+            });
+         }
+
+         // Boost expired but already used today
+         return res.status(400).json({
+            success: false,
+            message: "You've used your daily boost. Come back tomorrow! 🌙",
+            resetAt: new Date(
+               Date.UTC(
+                  now.getUTCFullYear(),
+                  now.getUTCMonth(),
+                  now.getUTCDate() + 1,
+               ),
+            ).toISOString(),
+         });
+      }
+
+      // Activate boost — 30 minutes
+      const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+
+      await User.findByIdAndUpdate(req.user._id, {
+         boost: {
+            active: true,
+            expiresAt,
+            usedAt: todayUTC,
+         },
+      });
+
+      console.log(
+         `[BOOST] Activated for user ${req.user._id}, expires ${expiresAt}`,
+      );
+
+      return res.json({
+         success: true,
+         message: "Your profile is boosted for 30 minutes! 🚀",
+         expiresAt,
+         resetsAt: new Date(
+            Date.UTC(
+               now.getUTCFullYear(),
+               now.getUTCMonth(),
+               now.getUTCDate() + 1,
+            ),
+         ).toISOString(),
+      });
+   } catch (err) {
+      console.error("[BOOST] Error:", err.message);
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
 module.exports = router;

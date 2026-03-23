@@ -13,6 +13,7 @@ const onboardingRoutes = require("./routes/onboarding");
 const matchingRoutes = require("./routes/matching");
 const chatRoutes = require("./routes/chat");
 const premiumRoutes = require("./routes/premium"); // SPRINT 3
+const photoRoutes = require("./routes/photos");
 
 const app = express();
 const server = http.createServer(app);
@@ -35,10 +36,11 @@ app.get("/health", (req, res) =>
 );
 
 app.use("/api/auth", authRoutes);
+app.use("/api/auth/photos", photoRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/matching", matchingRoutes);
 app.use("/api/chat", chatRoutes);
-app.use("/api/premium", premiumRoutes); // SPRINT 3
+app.use("/api/premium", premiumRoutes);
 
 if (process.env.NODE_ENV !== "production") {
    app.use("/api/debug", require("./routes/debug"));
