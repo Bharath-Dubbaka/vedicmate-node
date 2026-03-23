@@ -1,3 +1,6 @@
+// src/app.js
+// SPRINT 3: Added premium routes + raw body middleware for RC webhook
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -9,6 +12,7 @@ const authRoutes = require("./routes/auth");
 const onboardingRoutes = require("./routes/onboarding");
 const matchingRoutes = require("./routes/matching");
 const chatRoutes = require("./routes/chat");
+const premiumRoutes = require("./routes/premium"); // SPRINT 3
 
 const app = express();
 const server = http.createServer(app);
@@ -16,6 +20,13 @@ const server = http.createServer(app);
 connectDB();
 
 app.use(cors({ origin: "*" }));
+
+// ── IMPORTANT: Raw body for RevenueCat webhook MUST come before express.json() ──
+// RevenueCat sends HMAC-SHA256 signature over the raw body.
+// If express.json() parses it first, the raw buffer is lost and sig verification fails.
+app.use("/api/premium/webhook", express.raw({ type: "application/json" }));
+
+// Standard JSON parsing for all other routes
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -27,6 +38,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/matching", matchingRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/premium", premiumRoutes); // SPRINT 3
+
 if (process.env.NODE_ENV !== "production") {
    app.use("/api/debug", require("./routes/debug"));
 }

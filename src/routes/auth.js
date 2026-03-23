@@ -263,14 +263,21 @@ router.get("/me", protect, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/auth/me
+// Now accepts: bio, preferences, name, age
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch("/me", protect, async (req, res) => {
    try {
-      const { bio, preferences } = req.body;
+      const { bio, preferences, name, age } = req.body;
 
       const updates = {};
       if (bio !== undefined) updates.bio = bio.trim().slice(0, 300);
       if (preferences !== undefined) updates.preferences = preferences;
+      if (name !== undefined && name.trim())
+         updates.name = name.trim().slice(0, 50);
+      if (age !== undefined) {
+         const parsedAge = parseInt(age);
+         if (parsedAge >= 18 && parsedAge <= 100) updates.age = parsedAge;
+      }
 
       if (Object.keys(updates).length === 0) {
          return res

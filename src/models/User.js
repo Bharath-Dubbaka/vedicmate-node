@@ -1,5 +1,11 @@
 const mongoose = require("mongoose");
 
+const endOfToday = () => {
+   const now = new Date();
+   now.setHours(23, 59, 59, 999);
+   return now;
+};
+
 const KundliSchema = new mongoose.Schema(
    {
       nakshatra: { type: String },
@@ -25,12 +31,12 @@ const KundliSchema = new mongoose.Schema(
 
 const BirthDetailsSchema = new mongoose.Schema(
    {
-      dateOfBirth: { type: String, required: true }, // "YYYY-MM-DD"
-      timeOfBirth: { type: String, required: true }, // "HH:MM"
-      placeOfBirth: { type: String, required: true }, // display name
+      dateOfBirth: { type: String, required: true },
+      timeOfBirth: { type: String, required: true },
+      placeOfBirth: { type: String, required: true },
       latitude: { type: Number, required: true },
       longitude: { type: Number, required: true },
-      utcOffset: { type: Number, default: 5.5 }, // IST default
+      utcOffset: { type: Number, default: 5.5 },
    },
    { _id: false },
 );
@@ -41,14 +47,14 @@ const UserSchema = new mongoose.Schema(
       googleId: { type: String, unique: true, sparse: true },
       email: { type: String, unique: true, required: true, lowercase: true },
       name: { type: String, required: true },
-      avatar: { type: String }, // Google profile pic URL
-      passwordHash: { type: String, select: false }, // hidden by default, use .select("+passwordHash") to fetch
+      avatar: { type: String },
+      passwordHash: { type: String, select: false },
 
       // ── Profile ───────────────────────────────────
       bio: { type: String, maxlength: 300 },
       age: { type: Number },
       gender: { type: String, enum: ["male", "female", "other"] },
-      photos: [{ type: String }], // Cloudinary URLs, max 6
+      photos: [{ type: String }],
       lookingFor: {
          type: String,
          enum: ["marriage", "dating", "both"],
@@ -63,13 +69,15 @@ const UserSchema = new mongoose.Schema(
       preferences: {
          minAge: { type: Number, default: 18 },
          maxAge: { type: Number, default: 45 },
-         minGunaScore: { type: Number, default: 18 }, // minimum guna to show profile
+         minGunaScore: { type: Number, default: 18 },
          genderPref: {
             type: String,
             enum: ["male", "female", "both"],
             default: "both",
          },
       },
+
+      // ── Profile Views ─────────────────────────────
       profileViews: [
          {
             viewer: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -77,26 +85,85 @@ const UserSchema = new mongoose.Schema(
          },
       ],
       viewedProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
       // ── App State ─────────────────────────────────
       onboardingComplete: { type: Boolean, default: false },
       isActive: { type: Boolean, default: true },
       lastSeen: { type: Date, default: Date.now },
-      pushToken: { type: String }, // Expo push token
+      pushToken: { type: String },
 
-      // ── Swipe history (keep lightweight — just IDs) ──
+      // ── Premium Subscription (NEW Sprint 3) ───────
+      premium: {
+         isActive: { type: Boolean, default: false },
+         plan: { type: String, enum: ["monthly", "annual"], default: null },
+         expiresAt: { type: Date, default: null },
+         revenueCatId: { type: String, default: null },
+      },
+
+      // ── Daily Swipe Tracking (NEW Sprint 3) ───────
+      swipeTracking: {
+         date: { type: String, default: null }, // "YYYY-MM-DD" UTC
+         count: { type: Number, default: 0 },
+      },
+
+      // ── Swipe history ─────────────────────────────
       likedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
       passedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
    },
    { timestamps: true },
 );
 
-// Index for fast matching queries
+// ── Indexes ───────────────────────────────────────────────────────────────────
 UserSchema.index({ "kundli.gana": 1 });
 UserSchema.index({ "kundli.nadi": 1 });
 UserSchema.index({ gender: 1, "preferences.genderPref": 1 });
 UserSchema.index({ isActive: 1 });
 
-// Virtual: display name for Gana personality
+// ── Instance Methods ──────────────────────────────────────────────────────────
+
+// Check if user can swipe (free = 20/day, premium = unlimited)
+UserSchema.methods.canSwipe = function () {
+   const isPremiumUser = this.isPremium();
+   if (isPremiumUser) {
+      return { allowed: true, remaining: null, limit: null, isPremium: true };
+   }
+   const todayUTC = new Date().toISOString().split("T")[0];
+   const isNewDay =
+      !this.swipeTracking?.date || this.swipeTracking.date !== todayUTC;
+   const count = isNewDay ? 0 : this.swipeTracking?.count || 0;
+   const DAILY_LIMIT = 5;
+   const remaining = Math.max(0, DAILY_LIMIT - count);
+   return {
+      allowed: remaining > 0,
+      remaining,
+      limit: DAILY_LIMIT,
+      isPremium: false,
+   };
+};
+
+// Increment swipe count (call after each like/pass)
+UserSchema.methods.incrementSwipe = async function () {
+   const todayUTC = new Date().toISOString().split("T")[0];
+   const isNewDay =
+      !this.swipeTracking?.date || this.swipeTracking.date !== todayUTC;
+   await mongoose.model("User").findByIdAndUpdate(this._id, {
+      $set: {
+         "swipeTracking.date": todayUTC,
+         "swipeTracking.count": isNewDay
+            ? 1
+            : (this.swipeTracking?.count || 0) + 1,
+      },
+   });
+};
+
+// Check if premium subscription is currently valid
+UserSchema.methods.isPremium = function () {
+   if (!this.premium?.isActive) return false;
+   if (!this.premium?.expiresAt) return false;
+   return new Date() < new Date(this.premium.expiresAt);
+};
+
+// Virtuals
 UserSchema.virtual("ganaTitle").get(function () {
    const titles = {
       Deva: "Divine Soul ✨",

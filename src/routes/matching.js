@@ -1,19 +1,7 @@
 /**
  * src/routes/matching.js
- *
- * CANONICAL GUNA MILAN DIRECTION:
- * ─────────────────────────────────────────────────────────
- * Traditional Vedic Ashta Koota always calculates as:
- *   calculateGunaMilan(BRIDE/female, GROOM/male)
- *
- * Why it matters:
- *   - Varna: male's rank must be >= female's rank (positional rule)
- *   - Tara:  counted FROM bride's nakshatra TO groom's (directional)
- *   - Bhakoot: rashi position is counted bride→groom (directional)
- *
- * Enforced by the helper: getCanonicalGuna(userA, userB)
- *   → always resolves who is bride/groom regardless of who is "me"
- *   → both users see the SAME score
+ * SPRINT 3: Swipe limit enforcement added to like + pass routes.
+ * Free users: 20 swipes/day (UTC reset). Premium: unlimited.
  */
 
 const express = require("express");
@@ -67,7 +55,7 @@ const getCanonicalGuna = (userA, userB) => {
       brideNak = nakA;
       groomNak = nakB;
    } else if (userA.gender === "male" && userB.gender === "female") {
-      brideNak = nakB; // swap — female always goes first
+      brideNak = nakB;
       groomNak = nakA;
    } else {
       // Same gender or "other" — no traditional direction, use A→B
@@ -103,15 +91,49 @@ const sendPushNotification = async (pushToken, title, body, data = {}) => {
 };
 
 // ─────────────────────────────────────────────────────────
+// SPRINT 3 Helper: check swipe allowance for a user
+// Reads premium + swipeTracking from DB fresh each time.
+// Returns { allowed, remaining, limit, isPremium }
+// ─────────────────────────────────────────────────────────
+const checkSwipeLimit = async (userId) => {
+   const user = await User.findById(userId).select("premium swipeTracking");
+   if (!user)
+      return { allowed: false, remaining: 0, limit: 20, isPremium: false };
+   return user.canSwipe();
+};
+
+// ─────────────────────────────────────────────────────────
+// Helper: next UTC midnight timestamp (for reset info in response)
+// ─────────────────────────────────────────────────────────
+const getNextUTCMidnight = () => {
+   const now = new Date();
+   return new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+   ).toISOString();
+};
+
+// ─────────────────────────────────────────────────────────
+// Helper: top 3 highest-scoring kootas for card highlights
+// ─────────────────────────────────────────────────────────
+const getTopHighlights = (breakdown) => {
+   return Object.entries(breakdown)
+      .map(([key, val]) => ({
+         name: val.name,
+         score: val.score,
+         max: val.max,
+         detail: val.detail,
+         percentage: Math.round((val.score / val.max) * 100),
+      }))
+      .sort((a, b) => b.percentage - a.percentage)
+      .slice(0, 3);
+};
+
+// ─────────────────────────────────────────────────────────
 // GET /api/matching/discover
 //
 // Returns a batch of compatible profiles for the swipe deck.
-// Filters by: age range, gender preference, mutual gender pref,
-//             and minimum guna score threshold.
-//
-// Query params:
-//   limit  - profiles to return (default 10)
-//   cursor - last seen userId for pagination
+// SPRINT 3: Includes boost field in candidate select so boosted
+// profiles can be sorted to the top.
 // ─────────────────────────────────────────────────────────
 router.get("/discover", async (req, res) => {
    try {
@@ -127,7 +149,7 @@ router.get("/discover", async (req, res) => {
       }
 
       const { limit = 10, cursor } = req.query;
-      const { minAge, maxAge, minGunaScore, genderPref } = me.preferences;
+      const { minAge, maxAge, minGunaScore } = me.preferences;
 
       // ── Build candidate query ─────────────────────
       // Exclude: myself, people I already liked, people I already passed
@@ -141,20 +163,28 @@ router.get("/discover", async (req, res) => {
          age: { $gte: minAge, $lte: maxAge },
       };
 
-      // My preference: only show the gender I want to see
-      if (genderPref !== "both") {
-         query.gender = genderPref;
+      // Vedic calculation requires female nakshatra as param 1, male as param 2.
+      // So we enforce opposite-gender matching: male users see female profiles only,
+      // female users see male profiles only. This ensures correct Guna Milan direction.
+      const requiredGender =
+         me.gender === "male"
+            ? "female"
+            : me.gender === "female"
+              ? "male"
+              : null;
+
+      if (requiredGender) {
+         query.gender = requiredGender;
       }
 
-      // Mutual filter: only show people who would also want to see me
-      // e.g. if I'm male, only show females whose genderPref is "male" or "both"
-      if (me.gender && me.gender !== "other") {
+      // Mutual filter: only show users who would match with me by gender
+      if (requiredGender) {
          query["preferences.genderPref"] = { $in: [me.gender, "both"] };
       }
 
-      // Fetch 3x more than needed — we'll filter by guna score after calculation
+      // SPRINT 3: Added "boost" to select so we can sort boosted profiles first
       const candidates = await User.find(query)
-         .select("name age gender kundli photos bio lookingFor")
+         .select("name age gender kundli photos bio lookingFor boost")
          .limit(parseInt(limit) * 3)
          .lean();
 
@@ -171,6 +201,12 @@ router.get("/discover", async (req, res) => {
          // Filter out profiles below the user's minimum guna threshold
          if (gunaResult.totalScore < minGunaScore) continue;
 
+         // SPRINT 3: Check if this candidate has an active boost
+         const isBoosted =
+            candidate.boost?.active &&
+            candidate.boost?.expiresAt &&
+            new Date(candidate.boost.expiresAt) > new Date();
+
          results.push({
             user: {
                id: candidate._id,
@@ -179,6 +215,8 @@ router.get("/discover", async (req, res) => {
                bio: candidate.bio,
                photos: candidate.photos || [],
                lookingFor: candidate.lookingFor,
+               // SPRINT 3: Expose boost flag to frontend (optional badge)
+               isBoosted: isBoosted || false,
                cosmicCard: {
                   nakshatra: `${candidate.kundli.nakshatraSymbol} ${candidate.kundli.nakshatra}`,
                   rashi: candidate.kundli.rashi,
@@ -205,20 +243,27 @@ router.get("/discover", async (req, res) => {
                verdictEmoji: gunaResult.verdictEmoji,
                verdictColor: gunaResult.verdictColor,
                highlights: getTopHighlights(gunaResult.breakdown),
-               breakdown: gunaResult.breakdown, // full 8-koota object for modal
-               doshas: gunaResult.doshas, // dosha array for modal
+               breakdown: gunaResult.breakdown,
+               doshas: gunaResult.doshas,
                hasDoshas: gunaResult.doshas.length > 0,
                doshaCount: gunaResult.doshas.length,
             },
+            // Internal sort flag — removed before client sees it below
+            _isBoosted: isBoosted,
          });
 
          if (results.length >= parseInt(limit)) break;
       }
 
-      // Sort best matches first
-      results.sort(
-         (a, b) => b.compatibility.totalScore - a.compatibility.totalScore,
-      );
+      // SPRINT 3: Boosted profiles bubble to top, then sort by guna score
+      results.sort((a, b) => {
+         if (a._isBoosted && !b._isBoosted) return -1;
+         if (!a._isBoosted && b._isBoosted) return 1;
+         return b.compatibility.totalScore - a.compatibility.totalScore;
+      });
+
+      // Clean up internal flag before sending to client
+      results.forEach((r) => delete r._isBoosted);
 
       return res.status(200).json({
          success: true,
@@ -232,8 +277,31 @@ router.get("/discover", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
+// GET /api/matching/swipe-status
+// SPRINT 3: Frontend polls this to show remaining swipes in UI
+// ─────────────────────────────────────────────────────────
+router.get("/swipe-status", async (req, res) => {
+   try {
+      const user = await User.findById(req.user._id).select(
+         "premium swipeTracking",
+      );
+      const status = user.canSwipe();
+
+      return res.json({
+         success: true,
+         allowed: status.allowed,
+         remaining: status.remaining === Infinity ? null : status.remaining,
+         limit: status.limit === Infinity ? null : status.limit,
+         isPremium: status.isPremium,
+         resetAt: getNextUTCMidnight(),
+      });
+   } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+   }
+});
+
+// ─────────────────────────────────────────────────────────
 // GET /api/matching/compatibility/:userId
-//
 // Full canonical Guna Milan report between me and any user.
 // Used when tapping "View Full Kundli" on a profile card.
 // Returns the same score regardless of who calls it.
@@ -268,14 +336,17 @@ router.get("/compatibility/:userId", async (req, res) => {
             nakshatra: them.kundli.nakshatra,
             age: them.age,
          },
-         compatibility: gunaResult, // full breakdown
+         compatibility: gunaResult,
       });
    } catch (err) {
       return res.status(500).json({ success: false, message: err.message });
    }
 });
 
-// POST /api/matching/view/:userId  — call this when user opens a profile card
+// ─────────────────────────────────────────────────────────
+// POST /api/matching/view/:userId
+// Record a profile view (called when user opens a card)
+// ─────────────────────────────────────────────────────────
 router.post("/view/:userId", async (req, res) => {
    try {
       const theirId = req.params.userId;
@@ -285,7 +356,7 @@ router.post("/view/:userId", async (req, res) => {
       await User.updateOne(
          {
             _id: theirId,
-            "profileViews.viewer": { $ne: req.user._id }, // only if not already there
+            "profileViews.viewer": { $ne: req.user._id },
          },
          {
             $push: {
@@ -302,7 +373,9 @@ router.post("/view/:userId", async (req, res) => {
    }
 });
 
+// ─────────────────────────────────────────────────────────
 // GET /api/matching/viewed-me — who viewed my profile
+// ─────────────────────────────────────────────────────────
 router.get("/viewed-me", async (req, res) => {
    try {
       const me = await User.findById(req.user._id)
@@ -328,7 +401,9 @@ router.get("/viewed-me", async (req, res) => {
    }
 });
 
+// ─────────────────────────────────────────────────────────
 // GET /api/matching/viewed-by-me — profiles I viewed
+// ─────────────────────────────────────────────────────────
 router.get("/viewed-by-me", async (req, res) => {
    try {
       const me = await User.findById(req.user._id)
@@ -345,15 +420,8 @@ router.get("/viewed-by-me", async (req, res) => {
 // POST /api/matching/like/:userId
 //
 // Like a profile. If they already liked me → mutual match!
-//
-// Flow:
-//   1. Add theirId to my likedUsers array
-//   2. Look for an existing Match doc for this pair
-//   3a. If match doc exists AND they already liked me → set status=matched
-//   3b. Otherwise → create/update pending Match doc
-//
-// The Match doc stores the CANONICAL guna score so both users
-// always see the same number in their Matches tab.
+// SPRINT 3: Checks swipe limit before processing. Increments
+// swipe count after a successful like (whether match or not).
 // ─────────────────────────────────────────────────────────
 router.post("/like/:userId", async (req, res) => {
    try {
@@ -366,6 +434,20 @@ router.post("/like/:userId", async (req, res) => {
             .json({ success: false, message: "Cannot like yourself" });
       }
 
+      // ── SPRINT 3: Swipe limit check ───────────────────────────────────────
+      const swipeStatus = await checkSwipeLimit(myId);
+      if (!swipeStatus.allowed) {
+         return res.status(429).json({
+            success: false,
+            message:
+               "You've used all 5 free swipes today. Upgrade to VedicMate Premium for unlimited swipes! ✨",
+            swipeLimitReached: true,
+            remainingSwipes: 0,
+            resetAt: getNextUTCMidnight(),
+         });
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       // Fetch both users — need gender for canonical guna direction
       const them = await User.findById(theirId).select(
          "name kundli gender pushToken",
@@ -375,11 +457,12 @@ router.post("/like/:userId", async (req, res) => {
             .status(404)
             .json({ success: false, message: "User not found" });
       }
+      // SPRINT 3: Also select swipeTracking + premium for incrementSwipe()
       const me = await User.findById(myId).select(
-         "name kundli gender likedUsers pushToken",
+         "name kundli gender likedUsers pushToken premium swipeTracking",
       );
 
-      // Add to my likedUsers (idempotent — $addToSet ignores duplicates)
+      // Add to my likedUsers (idempotent)
       if (!me.likedUsers.map(String).includes(theirId)) {
          await User.findByIdAndUpdate(myId, {
             $addToSet: { likedUsers: theirId },
@@ -403,14 +486,20 @@ router.post("/like/:userId", async (req, res) => {
       // Check if they already liked me (making this a mutual match)
       const isMatch = matchDoc && matchDoc.hasLiked(theirId);
 
+      // ── SPRINT 3: Increment swipe count (runs for both match + no-match) ──
+      await me.incrementSwipe();
+      const newRemaining = swipeStatus.isPremium
+         ? null
+         : Math.max(0, swipeStatus.remaining - 1);
+      // ─────────────────────────────────────────────────────────────────────
+
       if (isMatch) {
-         // ── 🎉 Mutual match! ──────────────────────────
+         // 🎉 Mutual match!
          matchDoc.status = "matched";
          matchDoc.matchedAt = new Date();
          matchDoc.likes.push({ from: myId });
          await matchDoc.save();
-         // add push to them:
-         // Notify them via Expo push
+
          if (!them.pushToken || them.pushToken !== me.pushToken) {
             await sendPushNotification(
                them.pushToken,
@@ -427,9 +516,12 @@ router.post("/like/:userId", async (req, res) => {
             message: "🎉 It's a Cosmic Match!",
             gunaScore: gunaResult.totalScore,
             verdict: gunaResult.verdict,
+            // SPRINT 3 additions:
+            swipesRemaining: newRemaining,
+            isPremium: swipeStatus.isPremium,
          });
       } else {
-         // ── First like — create or update pending match ──
+         // First like — create or update pending match
          if (!matchDoc) {
             // New match doc — store canonical guna score for both users to share
             matchDoc = await Match.create({
@@ -450,7 +542,7 @@ router.post("/like/:userId", async (req, res) => {
             matchDoc.likes.push({ from: myId });
             await matchDoc.save();
          }
-         // Before the isMatch:false return — notify them they got a like:
+
          if (!them.pushToken || them.pushToken !== me.pushToken) {
             await sendPushNotification(
                them.pushToken,
@@ -459,10 +551,14 @@ router.post("/like/:userId", async (req, res) => {
                { type: "liked", userId: myId.toString() },
             );
          }
+
          return res.status(200).json({
             success: true,
             isMatch: false,
             message: "Like sent! Waiting for them to like you back ⭐",
+            // SPRINT 3 additions:
+            swipesRemaining: newRemaining,
+            isPremium: swipeStatus.isPremium,
          });
       }
    } catch (err) {
@@ -474,15 +570,47 @@ router.post("/like/:userId", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // POST /api/matching/pass/:userId
 //
-// Pass (left swipe) — add to passedUsers so they never
-// appear in discover again for this user
+// Pass (left swipe).
+// SPRINT 3: Checks swipe limit before processing. Increments
+// swipe count after pass.
 // ─────────────────────────────────────────────────────────
 router.post("/pass/:userId", async (req, res) => {
    try {
-      await User.findByIdAndUpdate(req.user._id, {
+      const myId = req.user._id;
+
+      // ── SPRINT 3: Swipe limit check ───────────────────────────────────────
+      const swipeStatus = await checkSwipeLimit(myId);
+      if (!swipeStatus.allowed) {
+         return res.status(429).json({
+            success: false,
+            message:
+               "You've used all 5 free swipes today. Upgrade to VedicMate Premium for unlimited swipes! ✨",
+            swipeLimitReached: true,
+            remainingSwipes: 0,
+            resetAt: getNextUTCMidnight(),
+         });
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
+      await User.findByIdAndUpdate(myId, {
          $addToSet: { passedUsers: req.params.userId },
       });
-      return res.status(200).json({ success: true, message: "Passed" });
+
+      // ── SPRINT 3: Increment swipe count ──────────────────────────────────
+      const me = await User.findById(myId).select("premium swipeTracking");
+      await me.incrementSwipe();
+      const newRemaining = swipeStatus.isPremium
+         ? null
+         : Math.max(0, swipeStatus.remaining - 1);
+      // ─────────────────────────────────────────────────────────────────────
+
+      return res.status(200).json({
+         success: true,
+         message: "Passed",
+         // SPRINT 3 additions:
+         swipesRemaining: newRemaining,
+         isPremium: swipeStatus.isPremium,
+      });
    } catch (err) {
       return res.status(500).json({ success: false, message: err.message });
    }
@@ -505,7 +633,7 @@ router.get("/matches", async (req, res) => {
          .populate({
             path: "users",
             select: "name photos kundli age bio lastSeen",
-            match: { _id: { $ne: req.user._id } }, // only populate the OTHER user
+            match: { _id: { $ne: req.user._id } },
          })
          .sort({ matchedAt: -1 })
          .lean();
@@ -587,29 +715,9 @@ router.delete("/unmatch/:matchId", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// Helper: top 3 highest-scoring kootas for card highlights
-//
-// Sorts by percentage (score/max) so kootas are comparable
-// across their different max values (Nadi=8, Varna=1, etc.)
+// GET /api/matching/liked-by-me
+// People I liked who have NOT yet liked me back
 // ─────────────────────────────────────────────────────────
-const getTopHighlights = (breakdown) => {
-   return Object.entries(breakdown)
-      .map(([key, val]) => ({
-         name: val.name,
-         score: val.score,
-         max: val.max,
-         detail: val.detail,
-         percentage: Math.round((val.score / val.max) * 100),
-      }))
-      .sort((a, b) => b.percentage - a.percentage)
-      .slice(0, 3);
-};
-
-// REPLACE your existing liked-by-me and liked-me routes with these:
-// Key fix: exclude users who are already mutual matches
-
-// ── GET /api/matching/liked-by-me ─────────────────────────────────────────
-// People I liked who have NOT yet liked me back (pending sent requests)
 router.get("/liked-by-me", async (req, res) => {
    try {
       const me = await User.findById(req.user._id).select("likedUsers");
@@ -646,8 +754,10 @@ router.get("/liked-by-me", async (req, res) => {
    }
 });
 
-// ── GET /api/matching/liked-me ────────────────────────────────────────────
-// People who liked me but I have NOT liked back yet (pending received requests)
+// ─────────────────────────────────────────────────────────
+// GET /api/matching/liked-me
+// People who liked me but I have NOT liked back yet
+// ─────────────────────────────────────────────────────────
 router.get("/liked-me", async (req, res) => {
    try {
       // Find my own likedUsers to exclude people I already liked back
@@ -672,7 +782,7 @@ router.get("/liked-me", async (req, res) => {
          onboardingComplete: true,
          _id: {
             $ne: req.user._id,
-            $nin: [...myLikedIds, ...matchedUserIds], // exclude: I already liked them, or already matched
+            $nin: [...myLikedIds, ...matchedUserIds],
          },
       }).select("name age bio photos kundli gender");
 
