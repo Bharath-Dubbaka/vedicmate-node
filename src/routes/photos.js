@@ -50,9 +50,15 @@ router.post("/", protect, upload.single("photo"), async (req, res) => {
                folder: "vedicmate/profiles",
                public_id: `user_${req.user._id}`,
                overwrite: true, // replace existing photo
-               transformation: [
-                  { width: 800, height: 800, crop: "fill", gravity: "face" },
-                  { quality: "auto", fetch_format: "auto" },
+               eager: [
+                  {
+                     width: 800,
+                     height: 800,
+                     crop: "fill",
+                     gravity: "face",
+                     quality: "auto",
+                     fetch_format: "auto",
+                  },
                ],
             },
             (error, result) => {
