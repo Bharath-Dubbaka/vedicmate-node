@@ -18,6 +18,14 @@ cloudinary.config({
    api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+console.log("[PHOTOS] Cloudinary config:", {
+   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+   api_key: process.env.CLOUDINARY_API_KEY,
+   api_secret: process.env.CLOUDINARY_API_SECRET
+      ? process.env.CLOUDINARY_API_SECRET.substring(0, 5) + "..."
+      : "MISSING",
+});
+
 // Multer: memory storage, 5MB limit, images only
 const upload = multer({
    storage: multer.memoryStorage(),
