@@ -43,30 +43,12 @@ router.post("/", protect, upload.single("photo"), async (req, res) => {
             .json({ success: false, message: "No photo provided" });
       }
 
-      const timestamp = Math.round(new Date().getTime() / 1000);
-      const publicId = `user_${req.user._id}`;
-      // Only sign these exact params — no transformation
-      const paramsToSign = {
-         folder: "vedicmate/profiles",
-         overwrite: 1,
-         public_id: publicId,
-         timestamp,
-      };
-      const signature = cloudinary.utils.api_sign_request(
-         paramsToSign,
-         process.env.CLOUDINARY_API_SECRET,
-      );
-
       const uploadResult = await new Promise((resolve, reject) => {
          const stream = cloudinary.uploader.upload_stream(
             {
-               ...paramsToSign,
-               signature,
-               api_key: process.env.CLOUDINARY_API_KEY,
-               transformation: [
-                  { width: 800, height: 800, crop: "fill", gravity: "face" },
-                  { quality: "auto", fetch_format: "auto" },
-               ],
+               folder: "vedicmate/profiles",
+               public_id: `user_${req.user._id}`,
+               overwrite: true,
             },
             (error, result) => {
                if (error) reject(error);
