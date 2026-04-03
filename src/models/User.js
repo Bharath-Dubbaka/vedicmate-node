@@ -136,7 +136,7 @@ UserSchema.methods.canSwipe = function () {
    const isNewDay =
       !this.swipeTracking?.date || this.swipeTracking.date !== todayUTC;
    const count = isNewDay ? 0 : this.swipeTracking?.count || 0;
-   const DAILY_LIMIT = 5;
+   const DAILY_LIMIT = 15;
    const remaining = Math.max(0, DAILY_LIMIT - count);
    return {
       allowed: remaining > 0,

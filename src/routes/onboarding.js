@@ -171,7 +171,7 @@ router.post("/profile", async (req, res) => {
          ...(lookingFor && { lookingFor }),
          ...(preferences && {
             preferences: {
-               minAge: preferences.minAge || 18,
+               minAge: Math.max(18, preferences.minAge || 18),
                maxAge: preferences.maxAge || 45,
                minGunaScore: preferences.minGunaScore ?? 18,
                genderPref: preferences.genderPref || "both",
