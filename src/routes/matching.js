@@ -138,7 +138,7 @@ const getTopHighlights = (breakdown) => {
 router.get("/discover", async (req, res) => {
    try {
       const me = await User.findById(req.user._id).select(
-         "kundli gender preferences likedUsers passedUsers age",
+         "kundli gender preferences likedUsers passedUsers viewedProfiles age",
       );
 
       if (!me.kundli) {
@@ -153,10 +153,14 @@ router.get("/discover", async (req, res) => {
 
       // ── Build candidate query ─────────────────────
       // Exclude: myself, people I already liked, people I already passed
-      const excludeIds = [req.user._id, ...me.likedUsers, ...me.passedUsers];
+      const excludeIds = [
+         req.user._id.toString(),
+         ...me.likedUsers.map((id) => id.toString()),
+         ...me.passedUsers.map((id) => id.toString()),
+      ];
 
       const query = {
-         _id: { $nin: excludeIds, ...(cursor && { $gt: cursor }) },
+         _id: { $nin: excludeIds },
          onboardingComplete: true,
          isActive: true,
          kundli: { $exists: true },
@@ -175,10 +179,9 @@ router.get("/discover", async (req, res) => {
 
       if (requiredGender) {
          query.gender = requiredGender;
-      }
-
-      // Mutual filter: only show users who would match with me by gender
-      if (requiredGender) {
+         query["preferences.genderPref"] = { $in: [me.gender, "both"] };
+      } else {
+         // "other" gender — show everyone who accepts "other" or "both"
          query["preferences.genderPref"] = { $in: [me.gender, "both"] };
       }
 

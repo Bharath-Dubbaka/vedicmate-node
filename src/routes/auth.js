@@ -32,6 +32,7 @@ const formatUser = (user) => ({
    name: user.name,
    email: user.email,
    avatar: user.avatar || null,
+   photos: user.photos || [], // photo persisted in user doc for easy access
    onboardingComplete: user.onboardingComplete,
    kundli: user.kundli || null,
    preferences: user.preferences || null,
