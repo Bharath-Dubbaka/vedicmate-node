@@ -362,9 +362,10 @@ router.post("/photo", protect, upload.single("photo"), async (req, res) => {
       $push: { photos: photoUrl },
     });
 
+    const updatedUser = await User.findById(req.user._id).select("photos");
     return res
       .status(200)
-      .json({ success: true, photoUrl, photos: [...user.photos, photoUrl] });
+      .json({ success: true, photoUrl, photos: updatedUser.photos });
   } catch (err) {
     console.error("[AUTH/PHOTO] Upload error:", err.message);
     return res.status(500).json({ success: false, message: err.message });
