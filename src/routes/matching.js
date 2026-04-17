@@ -305,6 +305,7 @@ router.get("/swipe-status", async (req, res) => {
 // Used when tapping "View Full Kundli" on a profile card.
 // Returns the same score regardless of who calls it.
 // ─────────────────────────────────────────────────────────
+
 router.get("/compatibility/:userId", async (req, res) => {
   try {
     const me = await User.findById(req.user._id).select("kundli name gender");
@@ -329,11 +330,26 @@ router.get("/compatibility/:userId", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      me: { name: me.name, nakshatra: me.kundli.nakshatra },
+      me: {
+        name: me.name,
+        nakshatra: me.kundli.nakshatra,
+      },
       them: {
         name: them.name,
         nakshatra: them.kundli.nakshatra,
         age: them.age,
+        // ── NEW: full kundli for "Their Chart" tab ──────────────────────────
+        kundli: {
+          nakshatra: them.kundli.nakshatra,
+          rashi: them.kundli.rashi,
+          pada: them.kundli.pada,
+          gana: them.kundli.gana,
+          animal: them.kundli.animal, // yoni animal
+          nadi: them.kundli.nadi,
+          varna: them.kundli.varna,
+          vashya: them.kundli.vashya,
+          lordPlanet: them.kundli.lordPlanet,
+        },
       },
       compatibility: gunaResult,
     });
