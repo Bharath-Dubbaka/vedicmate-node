@@ -10,6 +10,7 @@ const Match = require("../models/Match");
 const { protect } = require("../middleware/auth");
 const { calculateGunaMilan } = require("../engines/gunaMilan");
 const { NAKSHATRAS } = require("../engines/nakshatraLookup");
+const Report = require("../models/Report");
 
 const router = express.Router();
 router.use(protect);
@@ -724,6 +725,63 @@ router.delete("/unmatch/:matchId", async (req, res) => {
     });
 
     return res.status(200).json({ success: true, message: "Unmatched" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── POST /api/matching/report/:userId ─────────────────────────────────────
+router.post("/report/:userId", protect, async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const reportedId = req.params.userId;
+
+    if (req.user._id.toString() === reportedId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Can't report yourself" });
+    }
+
+    // Prevent duplicate reports from same user
+    const existing = await Report.findOne({
+      reporter: req.user._id,
+      reported: reportedId,
+    });
+    if (existing) {
+      return res
+        .status(200)
+        .json({ success: true, message: "Already reported" });
+    }
+
+    await Report.create({
+      reporter: req.user._id,
+      reported: reportedId,
+      reason,
+    });
+
+    return res.status(201).json({ success: true, message: "Report submitted" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── POST /api/matching/block/:userId ──────────────────────────────────────
+// Adds to blocked list + unmatches if matched
+// POST /api/matching/block/:userId
+router.post("/block/:userId", protect, async (req, res) => {
+  try {
+    const blockedId = req.params.userId;
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $addToSet: { blocked: blockedId },
+    });
+
+    await Match.findOneAndUpdate(
+      { users: { $all: [req.user._id, blockedId] }, status: "matched" },
+      { status: "unmatched" }
+    );
+
+    return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

@@ -339,7 +339,7 @@ router.post("/photo", protect, upload.single("photo"), async (req, res) => {
         .json({ success: false, message: "No file uploaded" });
     }
 
-    // Upload to Cloudinary
+    // Upload to Cloudinary — unchanged
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
@@ -358,14 +358,42 @@ router.post("/photo", protect, upload.single("photo"), async (req, res) => {
     });
 
     const photoUrl = result.secure_url;
-    await User.findByIdAndUpdate(req.user._id, {
-      $push: { photos: photoUrl },
-    });
 
-    const updatedUser = await User.findById(req.user._id).select("photos");
-    return res
-      .status(200)
-      .json({ success: true, photoUrl, photos: updatedUser.photos });
+    // ── Slot-aware photo update ──────────────────────────────────────────
+    const slot = parseInt(req.body.slot);
+    const photos = [...(user.photos || [])];
+
+    if (!isNaN(slot) && slot >= 0 && slot <= 2) {
+      // Delete old Cloudinary image at this slot if it exists
+      if (photos[slot]) {
+        try {
+          const oldPublicId = photos[slot]
+            .split("/")
+            .slice(-2)
+            .join("/")
+            .split(".")[0];
+          await cloudinary.uploader.destroy(oldPublicId);
+        } catch {
+          /* ignore cloudinary cleanup errors */
+        }
+      }
+      // Insert/replace at exact slot
+      photos[slot] = photoUrl;
+    } else {
+      // No slot specified — fallback: append if under 3
+      if (photos.length >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 3 photos allowed. Delete one first.",
+        });
+      }
+      photos.push(photoUrl);
+    }
+
+    await User.findByIdAndUpdate(req.user._id, { $set: { photos } });
+    // ────────────────────────────────────────────────────────────────────
+
+    return res.status(200).json({ success: true, photoUrl, photos });
   } catch (err) {
     console.error("[AUTH/PHOTO] Upload error:", err.message);
     return res.status(500).json({ success: false, message: err.message });
