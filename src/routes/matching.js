@@ -139,7 +139,7 @@ const getTopHighlights = (breakdown) => {
 router.get("/discover", async (req, res) => {
   try {
     const me = await User.findById(req.user._id).select(
-      "kundli gender preferences likedUsers passedUsers viewedProfiles age"
+      "kundli gender preferences likedUsers passedUsers viewedProfiles age blocked"
     );
 
     if (!me.kundli) {
@@ -154,10 +154,18 @@ router.get("/discover", async (req, res) => {
 
     // ── Build candidate query ─────────────────────
     // Exclude: myself, people I already liked, people I already passed
+    // Also exclude users who blocked me
+    const blockedMe = await User.find(
+      { blocked: req.user._id },
+      { _id: 1 }
+    ).lean();
+
     const excludeIds = [
       req.user._id.toString(),
       ...me.likedUsers.map((id) => id.toString()),
       ...me.passedUsers.map((id) => id.toString()),
+      ...(me.blocked || []).map((id) => id.toString()),
+      ...blockedMe.map((u) => u._id.toString()),
     ];
 
     const query = {
