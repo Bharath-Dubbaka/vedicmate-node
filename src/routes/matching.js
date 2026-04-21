@@ -674,6 +674,7 @@ router.get("/matches", async (req, res) => {
           name: otherUser?.name,
           age: otherUser?.age,
           photo: otherUser?.photos?.[0] || null,
+          photos: otherUser?.photos || [],
           lastSeen: otherUser?.lastSeen,
           cosmicCard: otherUser?.kundli
             ? {
