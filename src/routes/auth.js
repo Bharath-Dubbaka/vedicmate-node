@@ -15,6 +15,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { protect } = require("../middleware/auth");
+const Message = require("../models/Message");
+const Match = require("../models/Match");
+const Report = require("../models/Report");
 
 const router = express.Router();
 
@@ -446,9 +449,8 @@ router.patch("/push-token", protect, async (req, res) => {
   }
 });
 
-
-//Delete Account 
-router.delete('/account', protect, async (req, res) => {
+//Delete Account
+router.delete("/account", protect, async (req, res) => {
   try {
     const userId = req.user._id;
 
@@ -456,21 +458,18 @@ router.delete('/account', protect, async (req, res) => {
     await Message.deleteMany({ sender: userId });
 
     // Unmatch all matches
-    await Match.updateMany(
-      { users: userId },
-      { status: 'unmatched' }
-    );
+    await Match.updateMany({ users: userId }, { status: "unmatched" });
 
     // Delete reports by/about user
     await Report.deleteMany({
-      $or: [{ reporter: userId }, { reported: userId }]
+      $or: [{ reporter: userId }, { reported: userId }],
     });
 
     // Delete Cloudinary photos
-    const user = await User.findById(userId).select('photos');
+    const user = await User.findById(userId).select("photos");
     for (const photoUrl of user.photos || []) {
       try {
-        const publicId = photoUrl.split('/').slice(-2).join('/').split('.')[0];
+        const publicId = photoUrl.split("/").slice(-2).join("/").split(".")[0];
         await cloudinary.uploader.destroy(publicId);
       } catch {}
     }
